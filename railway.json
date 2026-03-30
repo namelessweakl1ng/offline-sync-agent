@@ -4,6 +4,6 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "go run backend/main.go"
+    "startCommand": "./app"
   }
 }
