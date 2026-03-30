@@ -197,5 +197,5 @@ func main() {
 		port = "8080"
 	}
 
-	log.Fatal(http.ListenAndServeTLS(":"+port, "certs/cert.pem", "certs/key.pem", nil))
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
