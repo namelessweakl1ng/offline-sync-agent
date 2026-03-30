@@ -3,15 +3,18 @@ package network
 import (
 	"crypto/tls"
 	"net/http"
-	"offline-sync-agent/internal/config"
+	"os"
 	"time"
 )
 
 func GetAuthToken() string {
-	return config.AppConfig.AuthToken
+	return os.Getenv("AUTH_TOKEN")
 }
 
 func IsOnline() (bool, time.Duration, string) {
+
+	url := os.Getenv("SERVER_URL")
+
 	client := http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
@@ -21,13 +24,21 @@ func IsOnline() (bool, time.Duration, string) {
 
 	start := time.Now()
 
-	req, _ := http.NewRequest("GET", "https://localhost:8080/pull", nil)
+	req, _ := http.NewRequest("GET", url+"/pull", nil)
 	req.Header.Set("Authorization", "Bearer "+GetAuthToken())
 
-	_, err := client.Do(req)
+	resp, err := client.Do(req)
 	latency := time.Since(start)
 
 	if err != nil {
+		println("NETWORK ERROR:", err.Error())
+		return false, latency, "offline"
+	}
+
+	defer resp.Body.Close()
+
+	// 🔥 IMPORTANT FIX
+	if resp.StatusCode != 200 {
 		return false, latency, "offline"
 	}
 
