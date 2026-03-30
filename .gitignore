@@ -1,0 +1,16 @@
+# binaries
+*.exe
+*.out
+*.log
+
+# database
+*.db
+
+# certs (VERY IMPORTANT)
+certs/
+
+# env files
+.env
+
+# OS junk
+.DS_Store

@@ -1,0 +1,7 @@
+sync:
+  fast_retry: 2
+  slow_retry: 10
+  interval: 5
+  batch_size: 2
+auth_token: mysecrettoken123
+server_url: http://localhost:8080
