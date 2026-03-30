@@ -191,7 +191,7 @@ func main() {
 	http.HandleFunc("/sync", handleSync)
 	http.HandleFunc("/pull", handlePull)
 
-	fmt.Println("Server running on https://localhost:8080")
+	fmt.Println("Server running on what ever port you put in deployment settings")
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
