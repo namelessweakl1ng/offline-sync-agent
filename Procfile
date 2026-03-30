@@ -1,1 +1,1 @@
-web: go build -o app ./backend && ./app
+web: go run backend/main.go
