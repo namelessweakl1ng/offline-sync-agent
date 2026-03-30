@@ -4,4 +4,4 @@ sync:
   interval: 5
   batch_size: 2
 auth_token: mysecrettoken123
-server_url: http://localhost:8080
+server_url: https://offline-sync-agent.up.railway.app
