@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"offline-sync-agent/internal/config"
 	"offline-sync-agent/internal/models"
 	"offline-sync-agent/internal/network"
 	"offline-sync-agent/internal/queue"
+	"os"
 	"time"
 )
 
@@ -59,12 +59,15 @@ func mergeData(local string, server string) string {
 func PullUpdates() {
 	last := queue.GetLastSync()
 
-	url := fmt.Sprintf("https://localhost:8080/pull?since=%d", last)
+	serverURL := os.Getenv("SERVER_URL")
+
+	url := fmt.Sprintf("%s/pull?since=%d", serverURL, last)
 
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Authorization", "Bearer "+network.GetAuthToken())
 
 	client := &http.Client{
+		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
@@ -96,12 +99,19 @@ func PullUpdates() {
 	var latest int64 = last
 
 	for _, item := range data {
-		m := item.(map[string]interface{})
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
 
-		id := m["id"].(string)
-		dataStr := m["data"].(string)
-		version := int(m["version"].(float64))
-		updated := int64(m["updated_at"].(float64))
+		id, _ := m["id"].(string)
+		dataStr, _ := m["data"].(string)
+
+		versionFloat, _ := m["version"].(float64)
+		version := int(versionFloat)
+
+		updatedFloat, _ := m["updated_at"].(float64)
+		updated := int64(updatedFloat)
 
 		op := models.Operation{
 			ID:        id,
@@ -190,6 +200,7 @@ func SyncNow() bool {
 	resultsChan := make(chan bool, len(chunks))
 
 	client := &http.Client{
+		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
@@ -203,12 +214,17 @@ func SyncNow() bool {
 					"operations": c,
 				}
 
-				jsonData, _ := json.Marshal(payload)
+				jsonData, err := json.Marshal(payload)
+				if err != nil {
+					logError("JSON marshal failed: " + err.Error())
+					resultsChan <- false
+					continue
+				}
 
 				var buf bytes.Buffer
 				gz := gzip.NewWriter(&buf)
 
-				_, err := gz.Write(jsonData)
+				_, err = gz.Write(jsonData)
 				if err != nil {
 					logError("Compression error: " + err.Error())
 					errorCount++
@@ -217,13 +233,21 @@ func SyncNow() bool {
 				}
 
 				gz.Close()
+				serverURL := os.Getenv("SERVER_URL")
 
-				req, _ := http.NewRequest("POST", config.AppConfig.ServerURL+"/sync", &buf)
+				req, _ := http.NewRequest("POST", serverURL+"/sync", &buf)
 				req.Header.Set("Authorization", "Bearer "+network.GetAuthToken())
 				req.Header.Set("Content-Encoding", "gzip")
 				req.Header.Set("Content-Type", "application/json")
 
 				resp, err := client.Do(req)
+				if err != nil {
+					logError("Worker failed: " + err.Error())
+					errorCount++
+					resultsChan <- false
+					continue
+				}
+				defer resp.Body.Close()
 
 				if err != nil {
 					logError("Worker failed: " + err.Error())
@@ -247,7 +271,6 @@ func SyncNow() bool {
 					resultsChan <- false
 					continue
 				}
-				resp.Body.Close()
 
 				resultsRaw, ok := result["results"].([]interface{})
 				if !ok {
@@ -257,9 +280,12 @@ func SyncNow() bool {
 				}
 
 				for _, r := range resultsRaw {
-					item := r.(map[string]interface{})
+					item, ok := r.(map[string]interface{})
+					if !ok {
+						continue
+					}
 					id := item["id"].(string)
-					status := item["status"].(string)
+					status, _ := item["status"].(string)
 
 					if status == "ok" {
 						logInfo("Synced: " + id)
@@ -335,12 +361,14 @@ func SyncNow() bool {
 			allSuccess = false
 		}
 	}
-	logInfo("All workers finished")
-
-	logInfo("All workers finished")
+	if allSuccess {
+		logInfo("All workers finished successfully")
+	} else {
+		logError("Some workers failed")
+	}
 	queue.CleanupSynced()
 	PullUpdates()
-	logError(fmt.Sprintf("Errors: %d", errorCount))
+	logInfo(fmt.Sprintf("Errors: %d", errorCount))
 	logInfo("Sync duration: " + time.Since(start).String())
 	return allSuccess
 }

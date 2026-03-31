@@ -29,8 +29,7 @@ type Record struct {
 var store = make(map[string]Record)
 var mu sync.Mutex
 var requestCount = 0
-
-var AUTH_TOKEN = os.Getenv("AUTH_TOKEN")
+var reqMu sync.Mutex
 
 type BatchRequest struct {
 	Operations []Operation `json:"operations"`
@@ -43,7 +42,7 @@ func authenticate(r *http.Request) bool {
 		return false
 	}
 
-	if token != "Bearer "+AUTH_TOKEN {
+	if token != "Bearer "+os.Getenv("AUTH_TOKEN") {
 		return false
 	}
 
@@ -84,20 +83,25 @@ func handlePull(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"data": result,
 	})
 }
 
 func handleSync(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	reqID := uuid.New().String()
 	fmt.Println("[REQ]", reqID, "Incoming sync request")
+
+	reqMu.Lock()
 	requestCount++
 	if requestCount > 1000 {
+		reqMu.Unlock()
 		http.Error(w, "Too many requests", http.StatusTooManyRequests)
 		return
 	}
+	reqMu.Unlock()
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB max
 	if !authenticate(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -119,7 +123,7 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 	err := json.NewDecoder(reader).Decode(&req)
 
 	if err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -179,13 +183,12 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 			Status: "ok",
 		})
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
 
-	response, _ := json.Marshal(map[string]interface{}{
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"results": results,
 	})
-
-	w.WriteHeader(http.StatusOK)
-	w.Write(response)
 }
 func main() {
 	http.HandleFunc("/sync", handleSync)

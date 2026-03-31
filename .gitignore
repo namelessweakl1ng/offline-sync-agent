@@ -6,11 +6,11 @@
 # database
 *.db
 
-# certs (VERY IMPORTANT)
+# certs
 certs/
 
-# env files
+# env
 .env
 
-# OS junk
+# OS
 .DS_Store

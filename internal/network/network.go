@@ -15,8 +15,8 @@ func IsOnline() (bool, time.Duration, string) {
 
 	url := os.Getenv("SERVER_URL")
 
-	client := http.Client{
-		Timeout: 5 * time.Second,
+	client := &http.Client{
+		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},

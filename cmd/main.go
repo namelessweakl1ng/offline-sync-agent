@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"offline-sync-agent/internal/config"
 	"offline-sync-agent/internal/db"
 	"offline-sync-agent/internal/models"
 	"offline-sync-agent/internal/network"
@@ -17,11 +16,6 @@ import (
 )
 
 func main() {
-	err := config.LoadConfig()
-	if err != nil {
-		fmt.Println("Failed to load config:", err)
-		return
-	}
 	db.InitDB()
 
 	if len(os.Args) < 2 {
@@ -45,7 +39,7 @@ func main() {
 			Data:      "",
 			Timestamp: time.Now().Unix(),
 			Synced:    false,
-			Version:   999, // force overwrite
+			Version:   int(time.Now().Unix()),
 			Priority:  1,
 		}
 
@@ -59,7 +53,7 @@ func main() {
 			Data:      "sample data",
 			Timestamp: time.Now().Unix(),
 			Synced:    false,
-			Version:   1,
+			Version:   int(time.Now().Unix()),
 			Priority:  1,
 		}
 

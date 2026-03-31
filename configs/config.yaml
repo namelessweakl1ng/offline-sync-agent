@@ -1,7 +1,0 @@
-sync:
-  fast_retry: 2
-  slow_retry: 10
-  interval: 5
-  batch_size: 2
-SERVER_URL: https://offline-sync-agent-production.up.railway.app
-AUTH_TOKEN: qwerty@1234
