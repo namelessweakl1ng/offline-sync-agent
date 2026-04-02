@@ -1,16 +1,47 @@
-# binaries
-*.exe
-*.out
-*.log
-
-# database
-*.db
-
-# certs
-certs/
-
-# env
+# Environment and local secrets
 .env
+.env.*
+!.env.example
+.envrc
 
-# OS
+# Local databases and runtime state
+data.db
+data.db-shm
+data.db-wal
+*.db
+*.db-shm
+*.db-wal
+
+# Local TLS/dev certificates and private keys
+certs/
+*.pem
+*.key
+
+# Build artifacts and caches
+.gocache/
+bin/
+dist/
+app
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Coverage output
+coverage.out
+coverage.html
+*.coverprofile
+
+# Logs and temp files
+*.log
+tmp/
+
+# Editor and OS files
 .DS_Store
+.idea/
+.vscode/
+.codex
+.codex/

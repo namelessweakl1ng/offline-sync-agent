@@ -1,205 +1,41 @@
 package main
 
 import (
-	"compress/gzip"
-	"encoding/json"
-	"fmt"
+	"context"
 	"log"
-	"net/http"
 	"os"
-	"sync"
-	"time"
+	"os/signal"
+	"syscall"
 
-	"github.com/google/uuid"
+	"offline-sync-agent/internal/config"
+	"offline-sync-agent/internal/logging"
+	"offline-sync-agent/internal/server"
 )
 
-type Operation struct {
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	Data    string `json:"data"`
-	Version int    `json:"version"`
-}
-
-type Record struct {
-	Data      string
-	Version   int
-	UpdatedAt int64
-}
-
-var store = make(map[string]Record)
-var mu sync.Mutex
-var requestCount = 0
-var reqMu sync.Mutex
-
-type BatchRequest struct {
-	Operations []Operation `json:"operations"`
-}
-
-func authenticate(r *http.Request) bool {
-	token := r.Header.Get("Authorization")
-
-	if token == "" {
-		return false
-	}
-
-	if token != "Bearer "+os.Getenv("AUTH_TOKEN") {
-		return false
-	}
-
-	return true
-}
-
-func handlePull(w http.ResponseWriter, r *http.Request) {
-	if !authenticate(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	sinceStr := r.URL.Query().Get("since")
-
-	var since int64 = 0
-	if sinceStr != "" {
-		fmt.Sscanf(sinceStr, "%d", &since)
-	}
-
-	type Response struct {
-		ID        string `json:"id"`
-		Data      string `json:"data"`
-		Version   int    `json:"version"`
-		UpdatedAt int64  `json:"updated_at"`
-	}
-
-	var result []Response
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	for id, rec := range store {
-		if rec.UpdatedAt > since {
-			result = append(result, Response{
-				ID:        id,
-				Data:      rec.Data,
-				Version:   rec.Version,
-				UpdatedAt: rec.UpdatedAt,
-			})
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"data": result,
-	})
-}
-
-func handleSync(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
-	reqID := uuid.New().String()
-	fmt.Println("[REQ]", reqID, "Incoming sync request")
-
-	reqMu.Lock()
-	requestCount++
-	if requestCount > 1000 {
-		reqMu.Unlock()
-		http.Error(w, "Too many requests", http.StatusTooManyRequests)
-		return
-	}
-	reqMu.Unlock()
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB max
-	if !authenticate(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	var req BatchRequest
-	var reader = r.Body
-
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		gz, err := gzip.NewReader(r.Body)
-		if err != nil {
-			http.Error(w, "Failed to decompress", http.StatusBadRequest)
-			return
-		}
-		defer gz.Close()
-		reader = gz
-	}
-
-	err := json.NewDecoder(reader).Decode(&req)
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	type Result struct {
-		ID      string `json:"id"`
-		Status  string `json:"status"`
-		Version int    `json:"version,omitempty"`
-	}
-
-	var results []Result
-
-	for _, op := range req.Operations {
-		if op.Type == "DELETE" {
-			mu.Lock()
-			delete(store, op.ID)
-			mu.Unlock()
-
-			fmt.Println("🗑 Deleted:", op.ID)
-
-			results = append(results, Result{
-				ID:     op.ID,
-				Status: "ok",
-			})
-			continue
-		}
-		if op.ID == "" || op.Type == "" {
-			results = append(results, Result{
-				ID:     op.ID,
-				Status: "invalid",
-			})
-			continue
-		}
-		mu.Lock()
-		currentVersion, exists := store[op.ID]
-
-		if exists && op.Version <= currentVersion.Version {
-			mu.Unlock() // 🔥 MUST UNLOCK BEFORE CONTINUE
-			results = append(results, Result{
-				ID:      op.ID,
-				Status:  "conflict",
-				Version: currentVersion.Version,
-			})
-			continue
-		}
-
-		store[op.ID] = Record{
-			Data:      op.Data,
-			Version:   op.Version,
-			UpdatedAt: time.Now().Unix(),
-		}
-		mu.Unlock()
-
-		fmt.Println("Accepted:", op.ID)
-
-		results = append(results, Result{
-			ID:     op.ID,
-			Status: "ok",
-		})
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"results": results,
-	})
-}
 func main() {
-	http.HandleFunc("/sync", handleSync)
-	http.HandleFunc("/pull", handlePull)
-
-	fmt.Println("Server running on what ever port you put in deployment settings")
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	cfg, err := config.LoadServerConfig()
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	log.Println("Server running on port", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
+	}
+
+	logger := logging.New(cfg.LogLevel)
+
+	store, err := server.NewStore(cfg.StoreBackend)
+	if err != nil {
+		logger.Error("failed to create backend store", "error", err)
+		os.Exit(1)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	httpServer := server.New(cfg, store, logger)
+	if err := httpServer.Run(ctx); err != nil {
+		logger.Error("backend server exited with error", "error", err)
+		os.Exit(1)
+	}
 }

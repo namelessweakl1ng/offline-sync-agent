@@ -1,231 +1,343 @@
-![Go](https://img.shields.io/badge/go-1.22-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+# Offline Sync Agent
 
-# 🚀 Offline Sync Agent
+`offline-sync-agent` is an offline-first sync system written in Go. It ships with a CLI client, an HTTP backend, a persistent local queue, batched sync, retry with backoff, conflict handling, gzip compression, and deployment-friendly server packaging.
 
-A lightweight **offline-first sync system** built in Go that reliably stores data locally and synchronizes it with a remote server when connectivity is available.
+The repository is structured as a maintainable open-source project rather than a one-off demo: configuration is centralized, logging is structured, the backend is middleware-driven, the sync engine is testable, and the storage layer is now abstracted so a Postgres-backed backend can be added without rewriting the HTTP API.
 
----
+## Features
 
-## ✨ Features
+- Offline queue backed by SQLite on the client side
+- Batched sync with gzip-compressed payloads
+- Retry loop with adaptive backoff
+- Conflict detection with merge-aware requeueing
+- Structured JSON logging with `DEBUG`, `INFO`, `WARN`, and `ERROR`
+- Graceful HTTP server shutdown
+- Middleware for request IDs, request logging, auth, and basic rate limiting
+- Typed request/response models and request validation
+- Unit tests for queue, sync, and network layers
 
-* 📦 **Persistent Queue** — Stores operations locally using SQLite
-* 🔄 **Automatic Sync** — Detects network and syncs when online
-* ⚡ **Retry with Backoff** — Handles unstable networks gracefully
-* ⚔️ **Conflict Resolution** — Version-based detection + resolution strategies
-* 🧵 **Concurrent Sync Workers** — Efficient batch processing
-* 📡 **Network Awareness** — Adjusts behavior based on connection quality
-* 🔐 **Token-based Authentication** — Secure API communication
-* 🗑 **CRUD Support** — Create, Update, Delete operations
+## Architecture
 
----
-
-## 🧠 How It Works
-
-1. Operations are stored locally when offline
-2. They are queued in a persistent database
-3. When network is available:
-
-   * Batched requests are sent to server
-   * Conflicts are detected and resolved
-4. Server returns updated data
-5. Local store is updated accordingly
-
----
-
-## 🏗 Project Structure
-
+```text
+           +-------------------+
+           |  CLI client       |
+           |  ./cmd            |
+           +---------+---------+
+                     |
+                     v
+           +-------------------+
+           |  Sync service     |
+           |  internal/sync    |
+           +---------+---------+
+                     |
+      +--------------+--------------+
+      |                             |
+      v                             v
++-------------+             +---------------+
+| Queue repo  |             | Network client|
+| internal/   |             | internal/     |
+| queue       |             | network       |
++------+------+             +-------+-------+
+       |                            |
+       v                            v
++-------------+             +---------------+
+| SQLite       |             | Backend HTTP  |
+| local state  |             | ./backend     |
++-------------+             +-------+-------+
+                                        |
+                                        v
+                               +------------------+
+                               | Store abstraction|
+                               | internal/server  |
+                               +------------------+
 ```
+
+### Repository layout
+
+```text
 .
-├── backend/        # API server
-├── cmd/            # CLI client
+├── backend/                # Backend entrypoint
+├── cmd/                    # CLI entrypoint
 ├── internal/
-│   ├── db/         # SQLite database
-│   ├── models/     # Data models
-│   ├── network/    # Connectivity checks
-│   ├── queue/      # Operation queue
-│   └── sync/       # Sync engine
-├── Dockerfile
-├── README.md
+│   ├── cli/                # CLI command handling
+│   ├── config/             # Environment-based config loading
+│   ├── db/                 # SQLite setup for the local queue
+│   ├── logging/            # Structured logger construction
+│   ├── models/             # Shared request, response, and domain models
+│   ├── network/            # Remote HTTP client
+│   ├── queue/              # Local queue repository
+│   ├── server/             # Backend HTTP server, middleware, storage abstraction
+│   └── sync/               # Sync engine and retry loop
+├── .env.example
+├── CONTRIBUTING.md
+├── LICENSE
+├── Makefile
+└── README.md
 ```
 
----
+## How Sync Works
 
-## ⚙️ Setup
+1. The CLI records operations locally in SQLite.
+2. Unsynced operations are ordered by priority and timestamp.
+3. The sync engine checks backend health and classifies network quality.
+4. Pending operations are sent in batches to `POST /sync`.
+5. Successful operations are marked synced and mirrored into `synced_data`.
+6. Conflicts are logged locally. Non-delete conflicts are requeued with either:
+   - a merged payload when the server has newer data
+   - an incremented version when the payload is otherwise safe to retry
+7. After a push cycle, the client calls `GET /pull?since=<unix-ts>` to fetch newer server-side records.
+8. The retry loop adapts between a fast retry for high-priority work and exponential backoff for lower-priority failures.
+
+### Conflict model
+
+The backend returns a conflict when a client submits a version that is older than or equal to the server version for the same record. The client then:
+
+- logs the conflict in the local `conflicts` table
+- keeps delete conflicts manual by default
+- merges non-delete payloads when server data differs
+- bumps the local version and requeues the operation
+
+## Quick Start
 
 ### 1. Clone the repository
 
-```
+```bash
 git clone https://github.com/YOUR_USERNAME/offline-sync-agent.git
 cd offline-sync-agent
 ```
 
----
+### 2. Configure the environment
 
-### 2. Set Environment Variables
+Copy `.env.example` into `.env` or export values manually.
 
-#### Backend
+Required for backend:
 
-```
-export AUTH_TOKEN=yourtoken
+```bash
+export AUTH_TOKEN=change-me
 export PORT=8080
 ```
 
-#### Client
+Required for sync-capable client commands:
 
-```
-export AUTH_TOKEN=yourtoken
+```bash
+export AUTH_TOKEN=change-me
 export SERVER_URL=http://localhost:8080
 ```
 
-⚠️ **Important:** The token must match between client and server.
+Optional client settings:
 
----
-
-## 🚀 Running the Project
-
-### Start Backend Server
-
-```
-go run backend/main.go
+```bash
+export SYNC_DB_PATH=data.db
+export SYNC_INTERVAL=5s
+export SYNC_MAX_BACKOFF=30s
+export LOG_LEVEL=INFO
 ```
 
----
+### 3. Run the backend
 
-### Run Client Commands
-
-#### Add Operation
-
-```
-go run cmd/main.go add
+```bash
+make run-server
 ```
 
-#### Delete Operation
+### 4. Queue some work
 
-```
-go run cmd/main.go delete <id>
-```
-
-#### Start Sync Loop
-
-```
-go run cmd/main.go sync
+```bash
+make run-client ARGS='add --data "hello offline world"'
+make run-client ARGS='status'
 ```
 
-#### Check Queue Status
+### 5. Run sync
 
-```
-go run cmd/main.go status
-```
+One-shot sync:
 
-#### View Conflicts
-
-```
-go run cmd/main.go conflicts
+```bash
+make run-client ARGS='sync --once'
 ```
 
----
+Background loop:
 
-## 🔄 API Endpoints
+```bash
+make run-client ARGS='sync'
+```
+
+## CLI Usage
+
+```bash
+go run ./cmd help
+go run ./cmd add --data "payload"
+go run ./cmd delete --id record-123
+go run ./cmd status
+go run ./cmd conflicts
+go run ./cmd resolve --id record-123
+go run ./cmd sync --once
+go run ./cmd sync --interval 3s --max-backoff 45s
+```
+
+The `add` command also accepts a positional payload for convenience:
+
+```bash
+go run ./cmd add "payload from argv"
+```
+
+## API Documentation
+
+### `GET /healthz`
+
+Returns server availability for client health checks.
+
+Response:
+
+```json
+{
+  "status": "ok"
+}
+```
 
 ### `POST /sync`
 
-* Accepts batched operations
-* Handles conflicts
-* Returns sync status
+Accepts a batch of operations. The endpoint supports `Content-Encoding: gzip` and requires `Authorization: Bearer <AUTH_TOKEN>`.
 
-### `GET /pull?since=<timestamp>`
+Request:
 
-* Fetches updated records from server
-
----
-
-## ⚔️ Conflict Resolution
-
-The system uses **version-based conflict detection**:
-
-* If client version ≤ server version → conflict
-* Strategies:
-
-  * **Server Wins**
-  * **Client Wins**
-  * **Merge (basic implementation)**
-
-Conflicts are logged and can be resolved manually.
-
----
-
-## 📦 Database Schema
-
-* `operations` → pending sync queue
-* `synced_data` → latest synced state
-* `conflicts` → conflict history
-* `metadata` → last sync timestamp
-
----
-
-## 🧪 Testing
-
+```json
+{
+  "operations": [
+    {
+      "id": "record-1",
+      "type": "CREATE",
+      "data": "hello",
+      "timestamp": 1710000000,
+      "version": 1,
+      "priority": 1
+    }
+  ]
+}
 ```
+
+Success response:
+
+```json
+{
+  "results": [
+    {
+      "id": "record-1",
+      "status": "ok",
+      "version": 1
+    }
+  ]
+}
+```
+
+Conflict response item:
+
+```json
+{
+  "id": "record-1",
+  "status": "conflict",
+  "version": 5,
+  "data": "server-side payload"
+}
+```
+
+### `GET /pull?since=<unix-ts>`
+
+Returns records updated after the provided Unix timestamp.
+
+Response:
+
+```json
+{
+  "data": [
+    {
+      "id": "record-1",
+      "data": "latest payload",
+      "version": 3,
+      "updated_at": 1710000100
+    }
+  ]
+}
+```
+
+## Configuration
+
+### Client environment variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AUTH_TOKEN` | empty | Required for sync commands |
+| `SERVER_URL` | empty | Required for sync commands |
+| `SYNC_DB_PATH` | `data.db` | SQLite path for local queue state |
+| `SYNC_INTERVAL` | `5s` | Delay between successful sync cycles |
+| `SYNC_MAX_BACKOFF` | `30s` | Max retry backoff |
+| `HTTP_TIMEOUT` | `10s` | HTTP client timeout |
+| `INSECURE_SKIP_VERIFY` | `false` | Allow self-signed TLS in development |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN`, `ERROR` |
+
+### Server environment variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AUTH_TOKEN` | none | Required bearer token |
+| `PORT` | `8080` | HTTP listen port |
+| `BACKEND_STORE` | `memory` | Current implementation: in-memory store |
+| `RATE_LIMIT_PER_MINUTE` | `1000` | Basic fixed-window rate limit |
+| `MAX_REQUEST_BODY_BYTES` | `1048576` | Max request body size |
+| `HTTP_READ_TIMEOUT` | `10s` | Server read timeout |
+| `HTTP_WRITE_TIMEOUT` | `15s` | Server write timeout |
+| `HTTP_IDLE_TIMEOUT` | `60s` | Server idle timeout |
+| `SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown timeout |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN`, `ERROR` |
+
+## Development
+
+Common commands:
+
+```bash
+make build
+make test
+make fmt
+make run-server
+make run-client ARGS='status'
+```
+
+Direct Go commands also work:
+
+```bash
+go build ./...
 go test ./...
 ```
 
----
+## Storage Roadmap
 
-## 🐳 Docker
+The backend currently ships with an in-memory implementation behind a `Store` interface. That interface was introduced specifically so a Postgres implementation can be added without changing the HTTP handlers, middleware, or request contracts.
 
-Build and run:
+## Deployment
 
+The backend is already suitable for container-based deployment and Railway-style environments:
+
+- reads `PORT` from the environment
+- performs graceful shutdown on `SIGINT` and `SIGTERM`
+- emits structured logs to standard error
+- keeps transport concerns inside the backend process instead of inside handlers
+
+## Testing
+
+Unit tests cover:
+
+- queue repository behavior
+- sync orchestration and conflict requeueing
+- network request encoding and response decoding
+
+Run the full suite with:
+
+```bash
+make test
 ```
-docker build -t sync-agent .
-docker run -p 8080:8080 sync-agent
-```
 
----
+## Contributing
 
-## ⚠️ Limitations (Current)
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, workflow, and testing guidance.
 
-* In-memory backend storage (no persistence yet)
-* Simple conflict merge strategy
-* Basic rate limiting
+## License
 
----
-
-## 🚀 Future Improvements
-
-* Delta sync (only changed fields)
-* Persistent backend database
-* Advanced merge strategies (CRDTs)
-* Observability (metrics + logs)
-* Real rate limiting
-* Multi-device sync
-
----
-
-## 💡 Use Cases
-
-* Offline-first mobile/web apps
-* Field data collection (low connectivity areas)
-* Notes / task syncing systems
-* Distributed data sync systems
-
----
-
-## 🧑‍💻 Author
-
-Built as a **systems design + backend engineering project** to demonstrate:
-
-* distributed systems concepts
-* offline-first architecture
-* conflict resolution strategies
-
----
-
-## ⭐ Contributing
-
-Feel free to fork, improve, and submit PRs!
-
----
-
-## 📜 License
-
-MIT License
+Released under the [MIT License](./LICENSE).
